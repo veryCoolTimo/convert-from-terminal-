@@ -1,6 +1,8 @@
 """CLI for conv - file converter."""
 
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -90,6 +92,68 @@ def convert_with_pillow(input_path: Path, output_path: Path) -> bool:
         return False
 
 
+def convert_animated_to_video(
+    input_path: Path,
+    output_path: Path,
+    fps: int = 10,
+) -> bool:
+    """Convert animated image (webp/gif) to video using Pillow + ffmpeg."""
+    if not check_ffmpeg():
+        console.print("[red]Error: ffmpeg not found. Install it with:[/red]")
+        console.print("  brew install ffmpeg")
+        return False
+
+    try:
+        from PIL import Image
+
+        img = Image.open(input_path)
+        duration = img.info.get("duration", 100)  # ms per frame
+        actual_fps = 1000 / duration if duration > 0 else fps
+
+        # Create temp directory for frames
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            frame_num = 0
+
+            try:
+                while True:
+                    frame = img.copy()
+                    if frame.mode != "RGB":
+                        frame = frame.convert("RGB")
+                    frame.save(tmppath / f"frame_{frame_num:05d}.png")
+                    frame_num += 1
+                    img.seek(img.tell() + 1)
+            except EOFError:
+                pass
+
+            if frame_num == 0:
+                console.print("[red]Error: No frames found in image[/red]")
+                return False
+
+            # Use ffmpeg to create video from frames
+            # pad filter ensures dimensions are divisible by 2 (required for h264)
+            cmd = [
+                "ffmpeg", "-y",
+                "-framerate", str(actual_fps),
+                "-i", str(tmppath / "frame_%05d.png"),
+                "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                str(output_path),
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                console.print(f"[red]ffmpeg error: {result.stderr}[/red]")
+                return False
+
+            return True
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return False
+
+
 def convert_with_ffmpeg(
     input_path: Path,
     output_path: Path,
@@ -169,14 +233,17 @@ def run_conversion(
     ) as progress:
         progress.add_task(f"Converting {path.name} to {target_format}...", total=None)
 
-        # Use ffmpeg only for video files
-        needs_ffmpeg = source_format in VIDEO_FORMATS
-
-        if needs_ffmpeg:
+        # Determine conversion method
+        if source_format in VIDEO_FORMATS:
+            # Video input -> use ffmpeg
             success = convert_with_ffmpeg(
                 path, output_path, source_format, target_format, fps, scale
             )
+        elif target_format in VIDEO_FORMATS:
+            # Image to video -> extract frames and use ffmpeg
+            success = convert_animated_to_video(path, output_path, fps)
         else:
+            # Image to image -> use Pillow
             success = convert_with_pillow(path, output_path)
 
     if success:
