@@ -101,17 +101,22 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Option
         "-m", str(model_path),
         "-f", str(audio_path),
         "--no-timestamps",
-        "-otxt",
         "--entropy-thold", "2.4",
         "--no-fallback",
-        "-pp",
     ]
 
     if language:
-        cmd.extend(["-l", language])
+        # Normalize language codes (eng -> en, rus -> ru, etc.)
+        lang_map = {"eng": "en", "rus": "ru", "jpn": "ja", "deu": "de", "fra": "fr", "spa": "es"}
+        lang = lang_map.get(language.lower(), language.lower())
+        cmd.extend(["-l", lang])
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            console.print(f"[red]Whisper error: {result.stderr}[/red]")
+            return None
+
         transcript = result.stdout.strip()
 
         # Check for .txt file output
@@ -123,8 +128,8 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Option
         # Clean up repetitions
         transcript = _clean_repetitions(transcript)
         return transcript
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]Whisper error: {e.stderr}[/red]")
+    except Exception as e:
+        console.print(f"[red]Whisper error: {e}[/red]")
         return None
 
 
