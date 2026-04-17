@@ -1,7 +1,10 @@
 """CLI for conv - file converter."""
 
+import os
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -20,8 +23,109 @@ console = Console()
 
 # Supported conversions
 VIDEO_FORMATS = {"mp4", "webm", "mov", "avi", "mkv"}
+AUDIO_FORMATS = {"mp3", "wav", "m4a", "aac", "ogg", "flac"}
 IMAGE_FORMATS = {"png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff", "ico", "heic"}
 SPECIAL_TARGETS = {"noaudio"}  # special conversion targets
+
+# Whisper config
+WHISPER_PATH = os.getenv("WHISPER_PATH", "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli")
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3")
+WHISPER_MODELS_DIR = Path(os.getenv("WHISPER_MODELS_DIR", str(Path.home() / "whisper.cpp" / "models")))
+
+
+def _clean_repetitions(text: str) -> str:
+    """Remove repeated phrases/sentences from transcript."""
+    # Remove exact duplicate sentences
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    seen = set()
+    cleaned = []
+    for s in sentences:
+        s_normalized = s.strip().lower()
+        if s_normalized and s_normalized not in seen:
+            seen.add(s_normalized)
+            cleaned.append(s)
+
+    text = ' '.join(cleaned)
+
+    # Remove repeated phrases (3+ consecutive same words/phrases)
+    text = re.sub(r'\b(\w+(?:\s+\w+){0,3})\s+(?:\1\s*){2,}', r'\1 ', text)
+
+    # Remove repeated single words (4+ times)
+    text = re.sub(r'\b(\w+)\s+(?:\1\s+){3,}', r'\1 ', text)
+
+    return text.strip()
+
+
+def check_whisper() -> bool:
+    """Check if whisper-cpp is installed."""
+    return Path(WHISPER_PATH).exists()
+
+
+def get_whisper_model_path() -> Path:
+    """Get path to whisper model file."""
+    model_file = f"ggml-{WHISPER_MODEL}.bin"
+    return WHISPER_MODELS_DIR / model_file
+
+
+def extract_audio_for_whisper(input_path: Path, output_path: Path) -> bool:
+    """Extract audio and convert to WAV 16kHz mono for whisper."""
+    if not check_ffmpeg():
+        return False
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(input_path),
+        "-ar", "16000",  # 16kHz sample rate
+        "-ac", "1",      # mono
+        "-c:a", "pcm_s16le",  # 16-bit PCM
+        str(output_path),
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Optional[str]:
+    """Transcribe audio file using whisper.cpp."""
+    model_path = get_whisper_model_path()
+    if not model_path.exists():
+        console.print(f"[red]Error: Whisper model not found at {model_path}[/red]")
+        console.print(f"Download with: curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{WHISPER_MODEL}.bin")
+        return None
+
+    cmd = [
+        WHISPER_PATH,
+        "-m", str(model_path),
+        "-f", str(audio_path),
+        "--no-timestamps",
+        "-otxt",
+        "--entropy-thold", "2.4",
+        "--no-fallback",
+        "-pp",
+    ]
+
+    if language:
+        cmd.extend(["-l", language])
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        transcript = result.stdout.strip()
+
+        # Check for .txt file output
+        txt_path = audio_path.with_suffix(".txt")
+        if txt_path.exists():
+            transcript = txt_path.read_text().strip()
+            txt_path.unlink()
+
+        # Clean up repetitions
+        transcript = _clean_repetitions(transcript)
+        return transcript
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Whisper error: {e.stderr}[/red]")
+        return None
 
 
 def check_ffmpeg() -> bool:
@@ -233,7 +337,8 @@ def show_help():
     console.print("Examples:")
     console.print("  conv to gif video.mp4")
     console.print("  conv to png image.webp")
-    console.print("  conv to jpg image.png --output result.jpg")
+    console.print("  conv to noaudio video.mp4")
+    console.print("  conv transcript video.mp4")
     console.print("\nRun [cyan]conv formats[/cyan] to see all supported formats")
 
 
@@ -321,12 +426,49 @@ def main(
         conv to jpg photo.png -o output.jpg
         conv to gif video.mp4 --fps 15 --scale 320
     """
+    # Check if a subcommand is being invoked
     if ctx.invoked_subcommand is not None:
         return
 
-    # Handle "formats" as special case
+    # Handle special commands
     if to == "formats":
         formats_cmd()
+        return
+
+    if to == "transcript":
+        # Parse args for transcript command
+        args = sys.argv[2:]  # skip 'conv' and 'transcript'
+        file_path = None
+        language = None
+        out_path = None
+
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg in ("-l", "--language") and i + 1 < len(args):
+                language = args[i + 1]
+                i += 2
+            elif arg in ("-o", "--output") and i + 1 < len(args):
+                out_path = Path(args[i + 1])
+                i += 2
+            elif arg in ("--help", "-h"):
+                console.print("[bold]conv transcript[/bold] - Transcribe audio/video\n")
+                console.print("Usage: conv transcript <file> [OPTIONS]\n")
+                console.print("Options:")
+                console.print("  -l, --language TEXT   Language code (en, ru, ja)")
+                console.print("  -o, --output PATH     Output text file path")
+                return
+            elif not arg.startswith("-"):
+                file_path = Path(arg)
+                i += 1
+            else:
+                i += 1
+
+        if not file_path:
+            console.print("Usage: conv transcript <file> [-l language] [-o output]")
+            return
+
+        transcript_cmd(file_path, language=language, output=out_path)
         return
 
     if not all([to, target_format, path]):
@@ -345,6 +487,85 @@ def main(
         raise typer.Exit(1)
 
     run_conversion(source_format, target_format, path, output, fps, scale)
+
+
+@app.command("transcript")
+def transcript_cmd(
+    path: Path = typer.Argument(..., help="Path to audio/video file"),
+    language: Optional[str] = typer.Option(None, "-l", "--language", help="Language code (e.g., en, ru, ja)"),
+    output: Optional[Path] = typer.Option(None, "-o", "--output", help="Output text file path"),
+):
+    """
+    Transcribe audio/video to text using whisper.
+
+    Examples:
+        conv transcript video.mp4
+        conv transcript audio.mp3 -l ru
+        conv transcript video.mp4 -o transcript.txt
+    """
+    if not path.exists():
+        console.print(f"[red]Error: File not found: {path}[/red]")
+        raise typer.Exit(1)
+
+    if not check_whisper():
+        console.print(f"[red]Error: whisper-cpp not found at {WHISPER_PATH}[/red]")
+        console.print("Install with: brew install whisper-cpp")
+        raise typer.Exit(1)
+
+    source_format = path.suffix.lower().lstrip(".")
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        # Extract audio if video
+        if source_format in VIDEO_FORMATS:
+            progress.add_task("Extracting audio...", total=None)
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                tmp_path = Path(tmp.name)
+
+            if not extract_audio_for_whisper(path, tmp_path):
+                console.print("[red]Error: Failed to extract audio[/red]")
+                raise typer.Exit(1)
+
+            audio_path = tmp_path
+        elif source_format in AUDIO_FORMATS:
+            # Convert to WAV 16kHz if needed
+            if source_format != "wav":
+                progress.add_task("Converting audio...", total=None)
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    tmp_path = Path(tmp.name)
+
+                if not extract_audio_for_whisper(path, tmp_path):
+                    console.print("[red]Error: Failed to convert audio[/red]")
+                    raise typer.Exit(1)
+
+                audio_path = tmp_path
+            else:
+                audio_path = path
+        else:
+            console.print(f"[red]Error: Unsupported format for transcription: {source_format}[/red]")
+            raise typer.Exit(1)
+
+        # Transcribe
+        progress.add_task("Transcribing with whisper...", total=None)
+        transcript = transcribe_audio(audio_path, language)
+
+        # Cleanup temp file
+        if audio_path != path and audio_path.exists():
+            audio_path.unlink()
+
+    if not transcript:
+        console.print("[red]Transcription failed![/red]")
+        raise typer.Exit(1)
+
+    # Save to file
+    output_path = output or path.with_suffix(".txt")
+    output_path.write_text(transcript)
+
+    word_count = len(transcript.split())
+    console.print(f"[green]✓[/green] Transcribed to: {output_path} ({word_count} words)")
 
 
 if __name__ == "__main__":
