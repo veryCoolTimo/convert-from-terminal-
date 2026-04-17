@@ -11,6 +11,7 @@ dependencies = [
 
 [project.scripts]
 conv = "conv.cli:app"
+transcript = "conv.cli:transcript_app"
 
 [build-system]
 requires = ["hatchling"]

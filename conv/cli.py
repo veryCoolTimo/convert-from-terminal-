@@ -568,5 +568,19 @@ def transcript_cmd(
     console.print(f"[green]✓[/green] Transcribed to: {output_path} ({word_count} words)")
 
 
+# Standalone transcript app
+transcript_app = typer.Typer(add_completion=False)
+
+
+@transcript_app.command()
+def transcript_main(
+    path: Path = typer.Argument(..., help="Path to audio/video file"),
+    language: Optional[str] = typer.Option(None, "-l", "--language", help="Language code (e.g., en, ru, ja)"),
+    output: Optional[Path] = typer.Option(None, "-o", "--output", help="Output text file path"),
+):
+    """Transcribe audio/video to text using whisper."""
+    transcript_cmd(path, language, output)
+
+
 if __name__ == "__main__":
     app()
