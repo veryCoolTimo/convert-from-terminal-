@@ -1,0 +1,17 @@
+[project]
+name = "conv"
+version = "0.1.0"
+description = "Fast file converter from terminal - mp4 to gif, webp to png, and more"
+requires-python = ">=3.10"
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "pillow>=10.0.0",
+]
+
+[project.scripts]
+conv = "conv.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
