@@ -1,7 +1,6 @@
 """CLI for conv - file converter."""
 
 import subprocess
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +12,7 @@ app = typer.Typer(
     name="conv",
     help="Fast file converter from terminal",
     add_completion=False,
+    invoke_without_command=True,
 )
 console = Console()
 
@@ -103,30 +103,26 @@ def convert_with_ffmpeg(
         return False
 
 
-@app.command()
-def convert(
-    source_format: str = typer.Argument(..., help="Source format (e.g., mp4, webp, jpeg)"),
-    to: str = typer.Argument(..., help="Should be 'to'"),
-    target_format: str = typer.Argument(..., help="Target format (e.g., gif, png)"),
-    path: Path = typer.Argument(..., help="Path to file to convert"),
-    output: Optional[Path] = typer.Option(None, "-o", "--output", help="Output file path"),
-    fps: int = typer.Option(10, "--fps", help="FPS for GIF output"),
-    scale: Optional[int] = typer.Option(None, "--scale", help="Width for GIF output"),
+def show_help():
+    """Show usage help."""
+    console.print("[bold]conv[/bold] - Fast file converter\n")
+    console.print("Usage: conv <source> to <target> <file>\n")
+    console.print("Examples:")
+    console.print("  conv mp4 to gif video.mp4")
+    console.print("  conv webp to png image.webp")
+    console.print("  conv png to jpg image.png --output result.jpg")
+    console.print("\nRun [cyan]conv formats[/cyan] to see all supported formats")
+
+
+def run_conversion(
+    source_format: str,
+    target_format: str,
+    path: Path,
+    output: Optional[Path],
+    fps: int,
+    scale: Optional[int],
 ):
-    """
-    Convert files between formats.
-
-    Examples:
-        conv mp4 to gif video.mp4
-        conv webp to png image.webp
-        conv jpeg to png photo.jpg -o output.png
-        conv mp4 to gif video.mp4 --fps 15 --scale 320
-    """
-    if to.lower() != "to":
-        console.print(f"[red]Error: Expected 'to', got '{to}'[/red]")
-        console.print("Usage: conv <source_format> to <target_format> <file>")
-        raise typer.Exit(1)
-
+    """Run the actual conversion."""
     source_format = source_format.lower().lstrip(".")
     target_format = target_format.lower().lstrip(".")
 
@@ -149,7 +145,6 @@ def convert(
     ) as progress:
         progress.add_task(f"Converting {path.name} to {target_format}...", total=None)
 
-        # Determine conversion method
         needs_ffmpeg = (
             source_format in VIDEO_FORMATS
             or target_format in VIDEO_FORMATS
@@ -171,8 +166,8 @@ def convert(
         raise typer.Exit(1)
 
 
-@app.command()
-def formats():
+@app.command("formats")
+def formats_cmd():
     """Show supported formats."""
     console.print("\n[bold]Supported formats:[/bold]\n")
     console.print("[cyan]Video:[/cyan]", ", ".join(sorted(VIDEO_FORMATS)))
@@ -183,6 +178,46 @@ def formats():
     console.print("  conv png to jpg image.png")
     console.print("  conv mov to mp4 video.mov")
     console.print()
+
+
+@app.callback(invoke_without_command=True)
+def main(
+    ctx: typer.Context,
+    source_format: Optional[str] = typer.Argument(None, help="Source format (e.g., mp4, webp, jpeg)"),
+    to: Optional[str] = typer.Argument(None, help="Should be 'to'"),
+    target_format: Optional[str] = typer.Argument(None, help="Target format (e.g., gif, png)"),
+    path: Optional[Path] = typer.Argument(None, help="Path to file to convert"),
+    output: Optional[Path] = typer.Option(None, "-o", "--output", help="Output file path"),
+    fps: int = typer.Option(10, "--fps", help="FPS for GIF output"),
+    scale: Optional[int] = typer.Option(None, "--scale", help="Width for GIF output"),
+):
+    """
+    Convert files between formats.
+
+    Examples:
+        conv mp4 to gif video.mp4
+        conv webp to png image.webp
+        conv jpeg to png photo.jpg -o output.png
+        conv mp4 to gif video.mp4 --fps 15 --scale 320
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+
+    # Handle "formats" as special case
+    if source_format == "formats":
+        formats_cmd()
+        return
+
+    if not all([source_format, to, target_format, path]):
+        show_help()
+        return
+
+    if to.lower() != "to":
+        console.print(f"[red]Error: Expected 'to', got '{to}'[/red]")
+        console.print("Usage: conv <source_format> to <target_format> <file>")
+        raise typer.Exit(1)
+
+    run_conversion(source_format, target_format, path, output, fps, scale)
 
 
 if __name__ == "__main__":
