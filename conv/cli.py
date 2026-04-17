@@ -21,7 +21,7 @@ console = Console()
 # Supported conversions
 VIDEO_FORMATS = {"mp4", "webm", "mov", "avi", "mkv"}
 IMAGE_FORMATS = {"png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff", "ico", "heic"}
-FFMPEG_REQUIRED = {"gif"} | VIDEO_FORMATS
+SPECIAL_TARGETS = {"noaudio"}  # special conversion targets
 
 
 def check_ffmpeg() -> bool:
@@ -37,10 +37,13 @@ def check_ffmpeg() -> bool:
         return False
 
 
-def get_output_path(input_path: Path, target_format: str, output: Optional[Path]) -> Path:
+def get_output_path(input_path: Path, target_format: str, output: Optional[Path], source_format: str = "") -> Path:
     """Generate output path."""
     if output:
         return output
+    if target_format == "noaudio":
+        # Keep same extension, add _noaudio suffix
+        return input_path.with_stem(f"{input_path.stem}_noaudio")
     return input_path.with_suffix(f".{target_format}")
 
 
@@ -154,6 +157,32 @@ def convert_animated_to_video(
         return False
 
 
+def remove_audio(input_path: Path, output_path: Path) -> bool:
+    """Remove audio from video file."""
+    if not check_ffmpeg():
+        console.print("[red]Error: ffmpeg not found. Install it with:[/red]")
+        console.print("  brew install ffmpeg")
+        return False
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(input_path),
+        "-an",  # no audio
+        "-c:v", "copy",  # copy video stream without re-encoding
+        str(output_path),
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            console.print(f"[red]ffmpeg error: {result.stderr}[/red]")
+            return False
+        return True
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return False
+
+
 def convert_with_ffmpeg(
     input_path: Path,
     output_path: Path,
@@ -224,7 +253,7 @@ def run_conversion(
         console.print(f"[red]Error: File not found: {path}[/red]")
         raise typer.Exit(1)
 
-    output_path = get_output_path(path, target_format, output)
+    output_path = get_output_path(path, target_format, output, source_format)
 
     with Progress(
         SpinnerColumn(),
@@ -234,7 +263,12 @@ def run_conversion(
         progress.add_task(f"Converting {path.name} to {target_format}...", total=None)
 
         # Determine conversion method
-        if source_format in VIDEO_FORMATS:
+        if target_format == "noaudio":
+            if source_format not in VIDEO_FORMATS:
+                console.print(f"[red]Error: noaudio only works with video files[/red]")
+                raise typer.Exit(1)
+            success = remove_audio(path, output_path)
+        elif source_format in VIDEO_FORMATS:
             # Video input -> use ffmpeg
             success = convert_with_ffmpeg(
                 path, output_path, source_format, target_format, fps, scale
@@ -259,10 +293,11 @@ def formats_cmd():
     console.print("\n[bold]Supported formats:[/bold]\n")
     console.print("[cyan]Video:[/cyan]", ", ".join(sorted(VIDEO_FORMATS)))
     console.print("[cyan]Image:[/cyan]", ", ".join(sorted(IMAGE_FORMATS)))
+    console.print("[cyan]Special:[/cyan] noaudio (remove audio from video)")
     console.print("\n[bold]Common conversions:[/bold]")
     console.print("  conv to gif video.mp4")
     console.print("  conv to png image.webp")
-    console.print("  conv to jpg image.png")
+    console.print("  conv to noaudio video.mp4")
     console.print("  conv to mp4 video.mov")
     console.print()
 
