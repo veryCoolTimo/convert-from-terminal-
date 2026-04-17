@@ -48,9 +48,39 @@ def convert_with_pillow(input_path: Path, output_path: Path) -> bool:
         from PIL import Image
 
         img = Image.open(input_path)
+        target_ext = output_path.suffix.lower()
+
+        # Check if animated
+        is_animated = getattr(img, "is_animated", False)
+
+        if is_animated and target_ext == ".gif":
+            # Save animated image as GIF
+            frames = []
+            try:
+                while True:
+                    frame = img.copy()
+                    if frame.mode != "RGBA":
+                        frame = frame.convert("RGBA")
+                    frames.append(frame)
+                    img.seek(img.tell() + 1)
+            except EOFError:
+                pass
+
+            if frames:
+                # Get duration from original
+                duration = img.info.get("duration", 100)
+                frames[0].save(
+                    output_path,
+                    save_all=True,
+                    append_images=frames[1:],
+                    duration=duration,
+                    loop=0,
+                    disposal=2,
+                )
+                return True
 
         # Handle RGBA to RGB conversion for formats that don't support alpha
-        if output_path.suffix.lower() in {".jpg", ".jpeg"} and img.mode in ("RGBA", "P"):
+        if target_ext in {".jpg", ".jpeg"} and img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
 
         img.save(output_path)
@@ -139,12 +169,8 @@ def run_conversion(
     ) as progress:
         progress.add_task(f"Converting {path.name} to {target_format}...", total=None)
 
-        needs_ffmpeg = (
-            source_format in VIDEO_FORMATS
-            or target_format in VIDEO_FORMATS
-            or target_format == "gif"
-            or source_format == "gif"
-        )
+        # Use ffmpeg only for video files
+        needs_ffmpeg = source_format in VIDEO_FORMATS
 
         if needs_ffmpeg:
             success = convert_with_ffmpeg(
